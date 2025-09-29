@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Oculus/WebXR • v16.3 • per-eye Gain/Sat/Lift + Contrast (No Strobe)</title>
+<title>Oculus/WebXR • v16.4 • Material Switch per Eye (No Strobe)</title>
 <style>
   *{box-sizing:border-box}
   html,body{margin:0;height:100%;overflow:hidden;background:#000;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Noto Sans KR",sans-serif}
@@ -13,7 +13,7 @@
   #menuToggle:not(:checked)~#controls{opacity:0;transform:translateY(-8px);pointer-events:none}
   #seedCanvas{position:fixed;inset:0;display:block;z-index:100;pointer-events:auto;touch-action:none;cursor:crosshair}
   #stage{position:fixed;inset:0;z-index:50}
-  #hud{position:fixed;left:12px;bottom:12px;z-index:1200;color:#c8ffd9;background:rgba(0,0,0,.45);padding:8px 10px;border-radius:8px;font:12px/1.4 ui-monospace,Consolas,monospace;min-width:240px}
+  #hud{position:fixed;left:12px;bottom:12px;z-index:1200;color:#c8ffd9;background:rgba(0,0,0,.45);padding:8px 10px;border-radius:8px;font:12px/1.4 ui-monospace,Consolas,monospace}
   #controls{position:fixed;right:14px;top:14px;z-index:1500;background:rgba(0,0,0,.9);color:#fff;width:380px;border-radius:14px;padding:12px;border:1px solid rgba(255,255,255,.15);backdrop-filter:blur(6px);transition:.18s;max-height:86vh;overflow:auto}
   #controls h3{margin:0 0 8px;text-align:center;color:#82d0ff;font-size:15px}
   .row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:6px 0}
@@ -35,7 +35,7 @@
   <div id="hud">init…</div>
 
   <div id="controls">
-    <h3>WebXR · 필수 컨트롤</h3>
+    <h3>WebXR · 컨트롤</h3>
     <div class="row">
       <button id="startBtn" class="button">시작</button>
       <button id="stopBtn"  class="button stop">중지</button>
@@ -68,7 +68,7 @@ import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.m
 import { VRButton } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/webxr/VRButton.js';
 const $=id=>document.getElementById(id), hud=$('hud');
 
-/* 점/팔레트 */
+/* ========= 점/팔레트 ========= */
 const can=$('seedCanvas'), ctx=can.getContext('2d');
 const state={points:[], seed:0, palette:[], running:false};
 const LIFE=3.5, SPAWN_MS=700, DENSITY=3, MIN_ONSCREEN=8;
@@ -97,7 +97,7 @@ function buildPalette(forceRandom){ state.seed=(forceRandom||state.points.length
     arr.push(hslToHex(h,Math.min(0.95,s),Math.min(0.85,Math.max(0.55,l)))); }
   state.palette=arr; }
 
-/* THREE/WebXR */
+/* ========= THREE/WebXR ========= */
 const stage=$('stage');
 const renderer=new THREE.WebGLRenderer({antialias:true,alpha:false});
 renderer.setPixelRatio(Math.min(devicePixelRatio||1,1.8));
@@ -117,37 +117,46 @@ const dir=new THREE.DirectionalLight(0xffffff,1.1); dir.position.set(2.2,4.0,2.8
 
 const group=new THREE.Group(); scene.add(group); let cubes=[];
 
-/* 머티리얼: 투명도 제거 */
-function colorFromPalette(rng){return new THREE.Color(state.palette[Math.floor(rng()*state.palette.length)]||'#ffffff');}
-function makeMat(color){
-  const m=new THREE.MeshStandardMaterial({color, metalness:0.04, roughness:0.42, transparent:false});
-  m.onBeforeCompile=(shader)=>{
-    shader.uniforms.uSat={value:1.0};
-    shader.uniforms.uGain={value:1.0};
-    shader.uniforms.uLift={value:0.0};
-    shader.uniforms.uContrast={value:1.25};
-    m.userData.shader=shader;
-    shader.fragmentShader=shader.fragmentShader.replace(
-      'gl_FragColor = vec4( outgoingLight, diffuseColor.a );',
-      `
-      float luma = dot(outgoingLight, vec3(0.299,0.587,0.114));
-      vec3 col = mix(vec3(luma), outgoingLight, uSat);
-      col = (col - 0.5) * uContrast + 0.5;
-      col += uLift;
-      col *= uGain;
-      col = clamp(col, 0.0, 1.0);
-      gl_FragColor = vec4(col, 1.0);
-      `
-    );
-  };
-  m.customProgramCacheKey=()=>'per_eye_sat_gain_lift_contrast_v163';
-  return m;
+function applyTransform(baseColor, gain, sat, lift, contrast){
+  const c=baseColor.clone(); const hsl={h:0,s:0,l:0}; c.getHSL(hsl);
+  hsl.s = THREE.MathUtils.clamp(hsl.s * sat, 0, 1);
+  hsl.l = THREE.MathUtils.clamp((hsl.l - 0.5) * contrast + 0.5 + lift, 0, 1);
+  c.setHSL(hsl.h, hsl.s, hsl.l);
+  c.multiplyScalar(gain);
+  c.r=Math.min(1,c.r); c.g=Math.min(1,c.g); c.b=Math.min(1,c.b);
+  return c;
 }
+function makeMaterial(color){ return new THREE.MeshStandardMaterial({color, metalness:0.04, roughness:0.42}); }
+function updateAllMaterials(){
+  for(const m of cubes){
+    let lfo=1.0;
+    if($('lfoOn').checked){
+      const amp=Number($('lfoAmp').value)/100, per=Math.max(0.5, Number($('lfoPer').value));
+      lfo = Math.max(0, 1 + amp*Math.sin((performance.now()/1000)*2*Math.PI/per));
+    }
+    const base=m.userData.baseColor;
+    const gainL=Number($('gainL').value)/100*lfo, gainR=Number($('gainR').value)/100*lfo;
+    const satL =Number($('satL').value)/100,  satR =Number($('satR').value)/100;
+    const liftL=Number($('liftL').value)/100, liftR=Number($('liftR').value)/100;
+    const cont =Number($('contrast').value)/100;
 
-/* 박스 */
+    const colL=applyTransform(base,gainL,satL,liftL,cont);
+    const colR=applyTransform(base,gainR,satR,liftR,cont);
+    m.userData.matL.color.copy(colL);
+    m.userData.matR.color.copy(colR);
+  }
+}
+['gainL','gainR','satL','satR','liftL','liftR','contrast','lfoOn','lfoAmp','lfoPer']
+  .forEach(id=>$(id).addEventListener('input', ()=>updateAllMaterials()));
+
+function colorFromPalette(rng){return new THREE.Color(state.palette[Math.floor(rng()*state.palette.length)]||'#ffffff');}
+
 function createBox(rng){
   const g=new THREE.BoxGeometry(80,80,110);
-  const mesh=new THREE.Mesh(g, makeMat(colorFromPalette(rng)));
+  const baseColor=colorFromPalette(rng);
+  const mesh=new THREE.Mesh(g, new THREE.MeshStandardMaterial({color:baseColor}));
+  mesh.userData.baseColor=baseColor.clone();
+
   const zStart=-32 - rng()*8;
   const xStart=(rng()-0.5)*3.2, yStart=(rng()-0.5)*2.2;
   mesh.position.set(xStart,yStart,zStart);
@@ -155,42 +164,29 @@ function createBox(rng){
 
   const life=LIFE, zEnd=-1.5, velZ=(zEnd - zStart)/Math.max(life,0.5);
   const velX=(rng()*0.18-0.09), swayA=0.06+rng()*0.12, swayHz=0.45+rng()*0.65;
+  mesh.userData={...mesh.userData, zEnd,velZ,velX,yBase:yStart,swayA,swayHz,phase:rng()*Math.PI*2,dieAt:performance.now()+life*1000,lifeTotal:life*1000};
+
+  // 좌/우 재질 준비
+  const base=mesh.userData.baseColor;
+  const gainL=Number($('gainL').value)/100, gainR=Number($('gainR').value)/100;
+  const satL =Number($('satL').value)/100,  satR =Number($('satR').value)/100;
+  const liftL=Number($('liftL').value)/100, liftR=Number($('liftR').value)/100;
+  const cont =Number($('contrast').value)/100;
+  mesh.userData.matL=makeMaterial(applyTransform(base,gainL,satL,liftL,cont));
+  mesh.userData.matR=makeMaterial(applyTransform(base,gainR,satR,liftR,cont));
 
   let leftUUID=null,rightUUID=null;
   mesh.onBeforeRender=(renderer,scene,camera)=>{
-    // 좌/우 카메라 식별
     const xrCam=renderer.xr.getCamera(cam);
     leftUUID  = leftUUID  || (xrCam.cameras?.[0]?.uuid||null);
     rightUUID = rightUUID || (xrCam.cameras?.[1]?.uuid||null);
     const isLeft = renderer.xr.isPresenting ? (camera.uuid===leftUUID) : true;
-
-    const cont = Math.max(0.3, Number($('contrast').value)/100);
-
-    // LFO + 스무딩
-    let lfo=1.0;
-    if($('lfoOn').checked){
-      const amp=Math.min(0.5, Number($('lfoAmp').value)/100);
-      const per=Math.max(0.5, Number($('lfoPer').value));
-      lfo = Math.max(0.0, 1 + amp*Math.sin((performance.now()/1000)*2*Math.PI/per));
-    }
-    const sh=mesh.material.userData.shader;
-    if(sh){
-      sh.uniforms.uContrast.value=cont;
-      sh.uniforms.uGain.value = Math.max(0.0, isLeft? smooth.gainL : smooth.gainR);
-      sh.uniforms.uSat.value  = Math.max(0.0, isLeft? smooth.satL  : smooth.satR );
-      sh.uniforms.uLift.value = (isLeft? Number($('liftL').value):Number($('liftR').value))/100;
-    }
+    mesh.material = isLeft ? mesh.userData.matL : mesh.userData.matR;
   };
 
-  mesh.userData={zEnd,velZ,velX,yBase:yStart,swayA,swayHz,phase:rng()*Math.PI*2,dieAt:performance.now()+life*1000,lifeTotal:life*1000};
   group.add(mesh); cubes.push(mesh);
 }
 
-/* 스무딩 상태 */
-const smooth = {gainL:1, gainR:1, satL:1, satR:1};
-function lp(current, target, dt, tau=0.20){ const a = 1 - Math.exp(-dt/tau); return current + (target-current)*a; }
-
-/* 스폰 */
 function spawn(now, mul=1){
   if(!state.palette.length) buildPalette(true);
   if(!state.running) return;
@@ -203,18 +199,6 @@ let prev=performance.now(), lastSpawn=0, fpsSm=60;
 function loop(now){
   const dt=Math.min((now-prev)/1000,0.05); prev=now; fpsSm=fpsSm*0.9 + (1/dt)*0.1;
 
-  // 스무딩 목표(프레임당 1회)
-  let lfo=1.0;
-  if($('lfoOn').checked){
-    const amp=Math.min(0.5, Number($('lfoAmp').value)/100);
-    const per=Math.max(0.5, Number($('lfoPer').value));
-    lfo = Math.max(0.0, 1 + amp*Math.sin((performance.now()/1000)*2*Math.PI/per));
-  }
-  smooth.gainL = lp(smooth.gainL, Number($('gainL').value)/100 * lfo, dt);
-  smooth.gainR = lp(smooth.gainR, Number($('gainR').value)/100 * lfo, dt);
-  smooth.satL  = lp(smooth.satL,  Number($('satL').value)/100, dt);
-  smooth.satR  = lp(smooth.satR,  Number($('satR').value)/100, dt);
-
   if(state.running && now-lastSpawn>=SPAWN_MS){ spawn(now,1); lastSpawn=now; }
   if(state.running && cubes.length<MIN_ONSCREEN){ spawn(now, Math.max(1, MIN_ONSCREEN - cubes.length)); }
 
@@ -226,17 +210,14 @@ function loop(now){
     m.position.z+=u.velZ*dt; m.position.x+=u.velX*dt; m.position.y=u.yBase + Math.sin(u.phase)*u.swayA;
 
     const remain = Math.max(0, (u.dieAt - t)/u.lifeTotal);
-    const shrinkStart = 0.25;
-    if(remain < shrinkStart){
-      const k = (remain/shrinkStart);
-      const s = 0.2 + 0.8*k*k;
-      m.scale.setScalar(s);
-    }
-    if(t>=u.dieAt || m.position.z>u.zEnd+0.5){ group.remove(m); m.geometry.dispose(); m.material.dispose(); cubes.splice(i,1); }
+    if(remain < 0.25){ const k=remain/0.25; m.scale.setScalar(0.2 + 0.8*k*k); }
+
+    if(t>=u.dieAt || m.position.z>u.zEnd+0.5){ group.remove(m); m.geometry.dispose();
+      m.userData.matL.dispose(); m.userData.matR.dispose(); m.material.dispose(); cubes.splice(i,1); }
   }
 
   renderer.render(scene, cam);
-  hud.textContent = `XR:${renderer.xr.isPresenting?'ON':'OFF'} | running:${state.running} | cubes:${cubes.length} | fps:${(1/dt).toFixed(0)}`;
+  hud.textContent = `XR:${renderer.xr.isPresenting?'ON':'OFF'} | running:${state.running} | cubes:${cubes.length} | fps:${fpsSm.toFixed(0)}`;
 }
 renderer.setAnimationLoop(loop);
 
