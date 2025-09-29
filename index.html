@@ -3,13 +3,10 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>PC Dual Color • v17 • Seeded Left/Right Color Cycling</title>
+<title>WebXR Dual Color • v17.1 • Seeded Random Per-Eye + Lift</title>
 <style>
   *{box-sizing:border-box}
   html,body{margin:0;height:100%;background:#000;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Noto Sans KR",sans-serif}
-  #left,#right{position:fixed;top:0;bottom:0;width:50%;transition:background-color .8s linear}
-  #left{left:0} #right{right:0}
-  #divider{position:fixed;top:0;bottom:0;left:50%;width:1px;background:rgba(255,255,255,.14);pointer-events:none}
   #seedCanvas{position:fixed;inset:0;z-index:10;cursor:crosshair;touch-action:none}
   #hud{position:fixed;left:12px;bottom:12px;color:#bfffe5;background:rgba(0,0,0,.45);padding:8px 10px;border-radius:8px;font:12px/1.4 ui-monospace,Consolas,monospace;z-index:20}
   #menuToggle{position:fixed;left:-9999px}
@@ -17,55 +14,61 @@
     background:rgba(0,0,0,.55);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer}
   #menuToggle:not(:checked)~#controls{opacity:0;transform:translateY(-8px);pointer-events:none}
   #controls{
-    position:fixed;right:14px;top:14px;z-index:40;background:rgba(0,0,0,.9);color:#fff;width:420px;border-radius:14px;padding:12px;
+    position:fixed;right:14px;top:14px;z-index:40;background:rgba(0,0,0,.9);color:#fff;width:440px;border-radius:14px;padding:12px;
     border:1px solid rgba(255,255,255,.15);backdrop-filter:blur(6px);transition:.18s;max-height:86vh;overflow:auto
   }
-  #controls h3{margin:0 0 8px;text-align:center;color:#93f2b0;font-size:15px}
+  #controls h3{margin:0 0 8px;text-align:center;color:#82d0ff;font-size:15px}
   .row{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:10px;margin:6px 0}
   .row>label{font-size:12px;white-space:nowrap}
   .val{font:12px/1 ui-monospace,Consolas,monospace;color:#c0ffd1;min-width:56px;text-align:right}
-  .rowBtns{display:grid;grid-template-columns:auto auto auto auto;gap:8px;margin:6px 0}
-  button{appearance:none;border:0;border-radius:10px;padding:8px 12px;cursor:pointer;color:#fff;background:#2a9d8f}
+  .rowBtns{display:grid;grid-template-columns:auto auto auto auto auto;gap:8px;margin:6px 0}
+  button{appearance:none;border:0;border-radius:10px;padding:8px 12px;cursor:pointer;color:#fff;background:#3a86ff}
   .stop{background:#c62828}.ghost{background:rgba(255,255,255,.18)}
 </style>
 </head>
 <body>
-  <div id="left"></div><div id="right"></div><div id="divider"></div>
   <canvas id="seedCanvas"></canvas>
   <input type="checkbox" id="menuToggle" checked>
   <label id="hamburger" for="menuToggle" title="컨트롤 패널 토글(F1/H)">☰</label>
 
   <div id="controls">
-    <h3>좌/우 색상 전환 (팔레트: 7점 Seed)</h3>
+    <h3>WebXR 좌/우 색상 전환</h3>
     <div class="rowBtns">
       <button id="startBtn">시작</button>
       <button id="stopBtn" class="stop">중지</button>
       <button id="nextBtn" class="ghost">다음 색</button>
       <button id="resetBtn" class="ghost">리셋(점 다시)</button>
+      <button id="enterVR">Enter VR</button>
     </div>
     <hr>
     <div class="row"><label>유지 시간</label><input id="holdSec" type="range" min="3" max="20" step="1" value="8"><span id="holdSecVal" class="val">8s</span></div>
-    <h3>좌/우 명도 · 채도</h3>
+    <h3>좌/우 명도 · 채도 · 리프트</h3>
     <div class="row"><label>좌 명도</label><input id="gainL" type="range" min="50" max="240" step="1" value="150"><span id="gainLVal" class="val">150%</span></div>
     <div class="row"><label>좌 채도</label><input id="satL"  type="range" min="0"   max="300" step="1" value="160"><span id="satLVal" class="val">1.60×</span></div>
+    <div class="row"><label>좌 리프트</label><input id="liftL" type="range" min="-50" max="50"  step="1" value="0"><span id="liftLVal" class="val">+0.00</span></div>
     <div class="row"><label>우 명도</label><input id="gainR" type="range" min="50" max="240" step="1" value="100"><span id="gainRVal" class="val">100%</span></div>
     <div class="row"><label>우 채도</label><input id="satR"  type="range" min="0"   max="300" step="1" value="100"><span id="satRVal" class="val">1.00×</span></div>
+    <div class="row"><label>우 리프트</label><input id="liftR" type="range" min="-50" max="50"  step="1" value="0"><span id="liftRVal" class="val">+0.00</span></div>
   </div>
 
-  <div id="hud">seed: — | running:false</div>
+  <div id="hud">seed: — | XR:OFF | running:false</div>
 
-<script>
-const $=id=>document.getElementById(id);
-const left=$('left'), right=$('right'), hud=$('hud');
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+import { VRButton } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/webxr/VRButton.js';
+const $=id=>document.getElementById(id), hud=$('hud');
 
-/* 숫자 라벨 표시 */
-const fmt={pct:v=>`${v}%`, times:v=>`${(v/100).toFixed(2)}×`, secs:v=>`${v|0}s`};
+/* 숫자 라벨 */
+const fmt={pct:v=>`${v}%`, times:v=>`${(v/100).toFixed(2)}×`, secs:v=>`${v|0}s`, lift:v=> (v>=0?`+${(v/100).toFixed(2)}`:`${(v/100).toFixed(2)}`) };
 const bindVal=(id,fmtf)=>{ const r=$(id), out=$(id+'Val'); const apply=()=>out.textContent=fmtf(Number(r.value)); r.addEventListener('input',apply); apply(); };
-bindVal('gainL',fmt.pct); bindVal('satL',fmt.times); bindVal('gainR',fmt.pct); bindVal('satR',fmt.times); bindVal('holdSec',fmt.secs);
+['gainL','gainR'].forEach(id=>bindVal(id,fmt.pct));
+['satL','satR'].forEach(id=>bindVal(id,fmt.times));
+['liftL','liftR'].forEach(id=>bindVal(id,fmt.lift));
+bindVal('holdSec',fmt.secs);
 
-/* 7점 Seed 캔버스 */
+/* Seed & RNG */
 const can=$('seedCanvas'), ctx=can.getContext('2d');
-const state={points:[], seed:0, palette:[], running:false, timer:null, idx:0};
+const state={points:[], seed:0, rng:null, running:false, timer:null, lastHue:null};
 function fit(){ can.width=innerWidth; can.height=innerHeight; drawPts(); }
 function drawPts(){
   ctx.clearRect(0,0,can.width,can.height);
@@ -76,84 +79,108 @@ function drawPts(){
 }
 function rel(e){const r=can.getBoundingClientRect();const p=(e.touches?e.touches[0]:e);return {x:p.clientX-r.left,y:p.clientY-r.top};}
 let lock=0,last={x:-1e9,y:-1e9};
-function addPt(p){const dx=p.x-last.x,dy=p.y-last.y;if(dx*dx+dy*dy<25)return;if(state.points.length>=7)return;state.points.push(p);last=p;drawPts(); if(state.points.length===7) buildPalette(false);}
-function onDown(e){ if(e.target.closest && e.target.closest('#controls')) return; if(can.style.display==='none') return;
-  const now=performance.now(); if(now<lock) return; lock=now+80; addPt(rel(e)); e.preventDefault?.(); }
+function addPt(p){const dx=p.x-last.x,dy=p.y-last.y;if(dx*dx+dy*dy<25)return;if(state.points.length>=7)return;state.points.push(p);last=p;drawPts();}
+function onDown(e){ if(e.target.closest && e.target.closest('#controls')) return; if(can.style.display==='none') return; const now=performance.now(); if(now<lock) return; lock=now+80; addPt(rel(e)); e.preventDefault?.(); }
 ['pointerdown','mousedown','click','touchstart'].forEach(ev=>can.addEventListener(ev,onDown,{passive:false}));
 window.addEventListener('resize', fit, {passive:true}); fit();
 
-/* 팔레트 생성(밝고 선명한 계열) */
-function hslToCss(h,s,l){ return `hsl(${(h%360+360)%360}deg, ${Math.round(s*100)}%, ${Math.round(l*100)}%)`; }
 function mulberry32(a){return function(){let t=a+=0x6D2B79F5;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return ((t^(t>>>14))>>>0)/4294967296;};}
 function computeSeed(){let s=0;for(let i=0;i<state.points.length;i++){const p=state.points[i];s^=(((p.x|0)+(p.y|0))<<(i%24));}return (s>>>0)||0xA5A5A5A5;}
-function buildPalette(forceRandom){
-  state.seed=(forceRandom||state.points.length<7)?((Math.random()*0xffffffff)>>>0):computeSeed();
-  const rng=mulberry32(state.seed), base=Math.floor(rng()*360), N=240, arr=[];
-  for(let i=0;i<N;i++){
-    const h=(base+i*(360/N)+(rng()*2-1)*12+360)%360;
-    const s=0.75+rng()*0.20; // 0.75~0.95 (채도 높은 팔레트)
-    const l=0.58+rng()*0.18; // 0.58~0.76 (밝은 팔레트)
-    arr.push({h,s,l});
-  }
-  state.palette=arr; state.idx=0;
-  hud.textContent=`seed: 0x${state.seed.toString(16)} | running:${state.running}`;
-}
+function ensureRNG(){ state.seed = (state.points.length===7)? computeSeed() : ((Math.random()*0xffffffff)>>>0);
+  state.rng  = mulberry32(state.seed ^ 0x9E3779B9); hud.textContent=`seed: 0x${state.seed.toString(16)} | XR:${renderer.xr.isPresenting?'ON':'OFF'} | running:${state.running}`; }
 
-/* 변환(명도=Lightness x gain, 채도=S x sat) */
-function transformHSL(hsl, gainPct, satPct){
+/* 랜덤 색(직전 hue와 18° 이상 차이) */
+function nextBaseHSL(){
+  if(!state.rng) ensureRNG();
+  let h, tries=0;
+  do{ h = state.rng()*360; tries++; } while (state.lastHue!=null && Math.abs(((h - state.lastHue + 540)%360)-180) < 18 && tries<8);
+  state.lastHue = h;
+  const s = 0.75 + state.rng()*0.20;
+  const l = 0.58 + state.rng()*0.18;
+  return {h,s,l};
+}
+function transformHSL(hsl, gainPct, satPct, liftPct){
   const s = Math.max(0, Math.min(1, hsl.s * (satPct/100)));
-  let   l = hsl.l * (gainPct/100);
+  let   l = hsl.l * (gainPct/100) + (liftPct/100);
   l = Math.max(0, Math.min(1, l));
   return {h:hsl.h, s, l};
 }
-function currentColors(){
-  if(!state.palette.length) buildPalette(true);
-  const base = state.palette[state.idx % state.palette.length];
-  const leftHSL  = transformHSL(base, Number($('gainL').value), Number($('satL').value));
-  const rightHSL = transformHSL(base, Number($('gainR').value), Number($('satR').value));
-  return { leftCss: hslToCss(leftHSL.h,leftHSL.s,leftHSL.l),
-           rightCss: hslToCss(rightHSL.h,rightHSL.s,rightHSL.l) };
-}
-function applyColors(){
-  const {leftCss,rightCss}=currentColors();
-  left.style.backgroundColor = leftCss;
-  right.style.backgroundColor = rightCss;
+function hslToHex(h,s,l){
+  const c=(1-Math.abs(2*l-1))*s,hp=((h%360)+360)%360/60,x=c*(1-Math.abs(hp%2-1)); let r=0,g=0,b=0;
+  if(hp<1){r=c;g=x;} else if(hp<2){r=x;g=c;} else if(hp<3){g=c;b=x;} else if(hp<4){g=x;b=c;} else if(hp<5){r=x;b=c;} else {r=c;b=x;}
+  const m=l-c/2; r=Math.round((r+m)*255); g=Math.round((g+m)*255); b=Math.round((b+m)*255);
+  return (r<<16)|(g<<8)|b;
 }
 
-/* 루프(주기적 색 전환) */
-function tickOnce(){
-  applyColors();
-  state.idx = (state.idx + 1) % state.palette.length;
+/* THREE/WebXR: 카메라 앞에 좌/우용 평면 두 개 */
+const renderer=new THREE.WebGLRenderer({antialias:true,alpha:false});
+renderer.setPixelRatio(Math.min(devicePixelRatio||1,1.8));
+renderer.setSize(innerWidth,innerHeight);
+renderer.xr.enabled=true; renderer.xr.setReferenceSpaceType('local-floor');
+document.body.appendChild(renderer.domElement);
+
+const scene=new THREE.Scene();
+const cam=new THREE.PerspectiveCamera(60,innerWidth/innerHeight,0.01,10); scene.add(cam);
+const geo=new THREE.PlaneGeometry(4,4,1,1);
+const matL=new THREE.MeshBasicMaterial({color:0x000000});
+const matR=new THREE.MeshBasicMaterial({color:0x000000});
+const quadL=new THREE.Mesh(geo, matL), quadR=new THREE.Mesh(geo, matR);
+quadL.position.z=-0.5; quadR.position.z=-0.5; cam.add(quadL); cam.add(quadR);
+
+/* 좌/우 토글(색은 프레임 고정 → 깜빡임 없음) */
+let leftUUID=null;
+scene.onBeforeRender=(renderer,scene,camera)=>{
+  const xrCam=renderer.xr.getCamera(cam);
+  leftUUID = leftUUID || (xrCam.cameras?.[0]?.uuid||null);
+  const isLeft = renderer.xr.isPresenting ? (camera.uuid===leftUUID) : true;
+  quadL.visible = isLeft; quadR.visible = !isLeft;
+};
+
+/* 색 적용 */
+function setColorsFromRandom(){
+  const base = nextBaseHSL();
+  const lH = transformHSL(base, Number($('gainL').value), Number($('satL').value), Number($('liftL').value));
+  const rH = transformHSL(base, Number($('gainR').value), Number($('satR').value), Number($('liftR').value));
+  matL.color.setHex( hslToHex(lH.h,lH.s,lH.l) );
+  matR.color.setHex( hslToHex(rH.h,rH.s,rH.l) );
 }
-function startCycle(){
-  if(!state.palette.length) buildPalette(state.points.length<7);
-  if(state.timer) clearInterval(state.timer);
-  tickOnce(); // 즉시 1회
+
+/* 타임러(재귀 setTimeout) */
+function scheduleNext(){
+  if(!state.running) return;
   const ms = Math.max(3, Math.min(20, Number($('holdSec').value))) * 1000;
-  state.timer = setInterval(tickOnce, ms);
-  state.running=true; can.style.display='none';
-  hud.textContent=`seed: 0x${state.seed.toString(16)} | running:true`;
+  state.timer = setTimeout(()=>{ setColorsFromRandom(); scheduleNext(); }, ms);
 }
-function stopCycle(){
-  if(state.timer) clearInterval(state.timer);
-  state.timer=null; state.running=false;
-  hud.textContent=`seed: 0x${state.seed.toString(16)} | running:false`;
-}
+function startCycle(){ if(!state.rng) ensureRNG(); if(state.timer) clearTimeout(state.timer);
+  state.running=true; can.style.display='none'; setColorsFromRandom(); scheduleNext();
+  hud.textContent=`seed: 0x${state.seed.toString(16)} | XR:${renderer.xr.isPresenting?'ON':'OFF'} | running:true`; }
+function stopCycle(){ if(state.timer) clearTimeout(state.timer); state.timer=null; state.running=false;
+  hud.textContent=`seed: 0x${state.seed.toString(16)} | XR:${renderer.xr.isPresenting?'ON':'OFF'} | running:false`; }
 
 /* 버튼 */
 $('startBtn').onclick = startCycle;
 $('stopBtn').onclick  = stopCycle;
-$('nextBtn').onclick  = () => { if(!state.running) applyColors(); else tickOnce(); };
-$('resetBtn').onclick = () => { stopCycle(); state.points=[]; state.palette=[]; state.idx=0; can.style.display='block'; drawPts(); };
+$('nextBtn').onclick  = ()=>{ if(!state.running){ if(!state.rng) ensureRNG(); } setColorsFromRandom(); };
+$('resetBtn').onclick = ()=>{ stopCycle(); state.points=[]; state.rng=null; state.lastHue=null; can.style.display='block'; drawPts(); };
 
-$('holdSec').addEventListener('input', ()=>{ if(state.running) startCycle(); });
+/* 유지시간 변경 즉시 반영 */
+$('holdSec').addEventListener('input', ()=>{ if(state.running){ if(state.timer) clearTimeout(state.timer); scheduleNext(); }});
+
+/* VR 버튼 */
+const vrBtn = VRButton.createButton(renderer);
+vrBtn.style.position='fixed'; vrBtn.style.right='16px'; vrBtn.style.top='16px'; vrBtn.style.zIndex='50';
+document.body.appendChild(vrBtn);
+$('enterVR').onclick=()=> vrBtn.click();
+
+/* 렌더 루프 */
+function onResize(){ cam.aspect=innerWidth/innerHeight; cam.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); fit(); }
+window.addEventListener('resize', onResize, {passive:true});
+renderer.setAnimationLoop(()=>{ renderer.render(scene,cam); });
 
 /* 패널 토글 */
 function togglePanel(){ $('menuToggle').checked=!$('menuToggle').checked; }
-document.addEventListener('keydown', e=>{
-  if(/INPUT|TEXTAREA/.test(e.target.tagName)) return;
-  if(e.key==='F1' || e.key==='h' || e.key==='H'){ e.preventDefault(); togglePanel(); }
-});
+document.addEventListener('keydown', (e)=>{ if(/INPUT|TEXTAREA/.test(e.target.tagName)) return;
+  if(e.key==='F1' || e.key==='h' || e.key==='H'){ e.preventDefault(); togglePanel(); }});
 </script>
 </body>
 </html>
